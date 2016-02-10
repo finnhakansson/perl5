@@ -2368,6 +2368,20 @@ S_find_byclass(pTHX_ regexp * prog, const regnode *c, char *s,
         }
         goto posixa;
 
+    case NASCII:
+        if (utf8_target) {
+            REXEC_FBC_UTF8_CLASS_SCAN(! isASCII_utf8(s));
+            break;
+        }
+        to_complement = 1;
+        /* FALLTHROUGH */
+
+    case ASCII:
+        /* Don't need to worry about utf8, as it can match only a single
+         * byte invariant character. */
+        REXEC_FBC_CLASS_SCAN(to_complement ^ isASCII(*s));
+        break;
+
     case NPOSIXA:
         if (utf8_target) {
             /* The complement of something that matches only ASCII matches all
@@ -6367,6 +6381,23 @@ S_regmatch(pTHX_ regmatch_info *reginfo, char *startpos, regnode *prog)
             }
             goto posixa;
 
+        case NASCII:   /* [:^ascii:] */
+
+            if (NEXTCHR_IS_EOS || isASCII(nextchr)) {
+                sayNO;
+            }
+
+            goto increment_locinput;
+
+        case ASCII:    /* [:ascii:] */
+
+            if (NEXTCHR_IS_EOS || ! isASCII(nextchr)) {
+                sayNO;
+            }
+
+            locinput++;
+            break;
+
         case NPOSIXA:   /* \W or [:^punct:] etc. under /a */
 
             if (NEXTCHR_IS_EOS) {
@@ -8921,6 +8952,19 @@ S_regrepeat(pTHX_ regexp *prog, char **startposp, const regnode *p,
 	}
 	break;
 
+    case ASCII:
+        if (utf8_target && loceol - scan > max) {
+
+            /* We didn't adjust <loceol> at the beginning of this routine
+             * because is UTF-8, but it is actually ok to do so, since here, to
+             * match, 1 char == 1 byte. */
+            loceol = scan + max;
+        }
+        while (scan < loceol && isASCII(*scan)) {
+	    scan++;
+	}
+	break;
+
     case NPOSIXD:
         if (utf8_target) {
             to_complement = 1;
@@ -8941,6 +8985,26 @@ S_regrepeat(pTHX_ regexp *prog, char **startposp, const regnode *p,
 	    while (hardcount < max && scan < loceol
                    && (! isASCII_utf8(scan)
                        || ! _generic_isCC_A((U8) *scan, FLAGS(p))))
+            {
+                scan += UTF8SKIP(scan);
+		hardcount++;
+	    }
+        }
+        break;
+
+    case NASCII:
+        if (! utf8_target) {
+            while (scan < loceol && ! isASCII(*scan)) {
+                scan++;
+            }
+        }
+        else {
+
+            /* The complement of something that matches only ASCII matches all
+             * non-ASCII, plus everything in ASCII that isn't in the class. */
+	    while (  hardcount < max
+                   && scan < loceol
+                   && (! isASCII_utf8(scan)))
             {
                 scan += UTF8SKIP(scan);
 		hardcount++;
