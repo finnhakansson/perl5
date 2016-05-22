@@ -13061,9 +13061,6 @@ S_regatom(pTHX_ RExC_state_t *pRExC_state, I32 *flagp, U32 depth)
 				vFAIL(error_msg);
 			    }
                             ender = result;
-			    if (IN_ENCODING && ender < 0x100) {
-				goto recode_encoding;
-			    }
 			    if (ender > 0xff) {
 				REQUIRE_UTF8(flagp);
 			    }
@@ -13096,11 +13093,7 @@ S_regatom(pTHX_ RExC_state_t *pRExC_state, I32 *flagp, U32 depth)
                                 if (RExC_recode_x_to_native) {
                                     ender = LATIN1_TO_NATIVE(ender);
                                 }
-                                else
 #endif
-                                if (IN_ENCODING) {
-                                    goto recode_encoding;
-                                }
 			    }
                             else {
 				REQUIRE_UTF8(flagp);
@@ -13159,17 +13152,6 @@ S_regatom(pTHX_ RExC_state_t *pRExC_state, I32 *flagp, U32 depth)
                                          p + 1,
                                          form_short_octal_warning(p, numlen));
                             }
-			}
-			if (IN_ENCODING && ender < 0x100)
-			    goto recode_encoding;
-			break;
-		      recode_encoding:
-			if (! RExC_override_recoding) {
-			    SV* enc = _get_encoding();
-			    ender = reg_recode((U8)ender, &enc);
-			    if (!enc && PASS2)
-				ckWARNreg(p, "Invalid escape in the specified encoding");
-			    REQUIRE_UTF8(flagp);
 			}
 			break;
 		    case '\0':
@@ -16143,9 +16125,6 @@ S_regclass(pTHX_ RExC_state_t *pRExC_state, I32 *flagp, U32 depth,
 		    }
 		}
                 non_portable_endpoint++;
-		if (IN_ENCODING && value < 0x100) {
-		    goto recode_encoding;
-		}
 		break;
 	    case 'x':
 		RExC_parse--;	/* function expects to be pointed at the 'x' */
@@ -16163,8 +16142,6 @@ S_regclass(pTHX_ RExC_state_t *pRExC_state, I32 *flagp, U32 depth,
 		    }
 		}
                 non_portable_endpoint++;
-		if (IN_ENCODING && value < 0x100)
-		    goto recode_encoding;
 		break;
 	    case 'c':
 		value = grok_bslash_c(*RExC_parse++, PASS2);
@@ -16197,23 +16174,6 @@ S_regclass(pTHX_ RExC_state_t *pRExC_state, I32 *flagp, U32 depth,
                         }
                     }
                     non_portable_endpoint++;
-		    if (IN_ENCODING && value < 0x100)
-			goto recode_encoding;
-		    break;
-		}
-	      recode_encoding:
-		if (! RExC_override_recoding) {
-		    SV* enc = _get_encoding();
-		    value = reg_recode((U8)value, &enc);
-		    if (!enc) {
-                        if (strict) {
-                            vFAIL("Invalid escape in the specified encoding");
-                        }
-                        else if (PASS2) {
-                            ckWARNreg(RExC_parse,
-				  "Invalid escape in the specified encoding");
-                        }
-                    }
 		    break;
 		}
 	    default:
