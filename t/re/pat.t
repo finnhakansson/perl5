@@ -23,7 +23,7 @@ BEGIN {
     skip_all_without_unicode_tables();
 }
 
-plan tests => 790;  # Update this when adding/deleting tests.
+plan tests => 818;  # Update this when adding/deleting tests.
 
 run_tests() unless caller;
 
@@ -1767,6 +1767,73 @@ EOP
                 $_ = "a" x 1000 . "b" x 1000 . "c" x 1000;
                 /.*a.*b.*c.*[de]/;
             ',"Timeout",{},"Test Perl 73464")
+        }
+
+        {
+            no warnings 'overflow';
+            no warnings 'portable';
+            no warnings 'deprecated';
+            my $highest_cp = ($Config{uvsize} < 8)
+                             ? chr 0xFFFF_FFFF
+                             : chr 0xFFFF_FFFF_FFFF_FFFF;
+            my $pat = qr/^[\x05-$highest_cp\x10-\x1F]+$/;
+            like("\x05", $pat, "Adding a range completely within a range that "
+                             . "extends to infinity works");
+            like("\x10", $pat, "... and matches something in the range");
+            like("\x1F", $pat, "... and matches something else in the range");
+            like("\x20", $pat, "... and matches something else in the range");
+            unlike("\x04", $pat, "... and doesn't match something immeditely "
+                               . "outside it");
+
+            $pat = qr/^[\x02-\x03\x06-\x{FFFF_FFFF_FFFF_FFFF}\x05-\x06]+$/;
+            like("\x02", $pat, "Adding a range that starts before, but "
+                             . "terminates within a range that extends to "
+                             . "infinity works");
+            like("\x07", $pat, "... and matches something in the original "
+                             . "range");
+            like("\x05", $pat, "... and matches the new part");
+            like("\x06", $pat, "... and continues to match the overlapping "
+                             . "part");
+            unlike("\x04", $pat, "... and doesn't match something immeditely "
+                               . "outside it");
+
+            $pat = qr/^[\x02-\x03\x06-\x{FFFF_FFFF_FFFF_FFFF}\x05-\x05]+$/,
+            like("\x02", $pat, "Adding a range that adjoins a range that "
+                             . "extends to infinity works");
+            like("\x06", $pat, "... and matches something in the original "
+                             . "range");
+            like("\x05", $pat, "... and matches the new part");
+            unlike("\x04", $pat, "... and doesn't match something immeditely "
+                               . "outside it");
+
+            $pat = qr/^[\x02-\x03\x06-\x{FFFF_FFFF_FFFF_FFFF}\x04-\x05]+$/,
+            like("\x02", $pat, "Adding a range that fills the gap ending "
+                             . "with a range that  extends to infinity works");
+            like("\x06", $pat, "... and matches something in the original "
+                             . "high range");
+            like("\x02", $pat, "... and matches something in the original "
+                             . "low range");
+            like("\x03", $pat, "... and matches something more in the original "
+                             . "low range");
+            like("\x04", $pat, "... and matches the new part");
+            like("\x05", $pat, "... and matches more of the new part");
+            unlike("\x01", $pat, "... and doesn't match something immeditely "
+                               . "outside it");
+
+            $pat = qr/^[\x02-\x03\x06-\x{FFFF_FFFF_FFFF_FFFF}\x03-\x05]+$/,
+            like("\x02", $pat, "Adding a range that starts in the range "
+                             . "before, and ends at  a range that  extends "
+                             . "to infinity works");
+            like("\x06", $pat, "... and matches something in the original "
+                             . "high range");
+            like("\x02", $pat, "... and matches something in the original "
+                             . "low range");
+            like("\x03", $pat, "... and matches something more in the original "
+                             . "low range");
+            like("\x04", $pat, "... and matches the new part");
+            like("\x05", $pat, "... and matches more of the new part");
+            unlike("\x01", $pat, "... and doesn't match something immeditely "
+                               . "outside it");
         }
 } # End of sub run_tests
 

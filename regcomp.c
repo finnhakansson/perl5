@@ -9492,50 +9492,222 @@ Perl__invlist_intersection_maybe_complement_2nd(pTHX_ SV* const a, SV* const b,
 }
 
 SV*
-Perl__add_range_to_invlist(pTHX_ SV* invlist, const UV start, const UV end)
+Perl__add_range_to_invlist(pTHX_ SV* invlist, UV start, UV end)
 {
     /* Add the range from 'start' to 'end' inclusive to the inversion list's
      * set.  A pointer to the inversion list is returned.  This may actually be
      * a new list, in which case the passed in one has been destroyed.  The
      * passed-in inversion list can be NULL, in which case a new one is created
-     * with just the one range in it */
+     * with just the one range in it.
+     *
+     * This used to mostly call the 'union' routine, but that is much more
+     * heavyweight than really needed for a single range addition */
 
-    SV* range_invlist;
     UV len;
+    UV* array;
+    SSize_t i_s;
+    SSize_t i_e;
+    unsigned int squash;    /* How many existing ranges get squashed together
+                               by this new one */
+    UV cur_highest;
 
+    /* This range becomes the whole inversion list if none already existed */
     if (invlist == NULL) {
 	invlist = _new_invlist(2);
-	len = 0;
-    }
-    else {
-	len = _invlist_len(invlist);
+        _append_range_to_invlist(invlist, start, end);
+        return invlist;
     }
 
-    /* If comes after the final entry actually in the list, can just append it
-     * to the end, */
-    if (len == 0
-	|| (! ELEMENT_RANGE_MATCHES_INVLIST(len - 1)
-            && start >= invlist_array(invlist)[len - 1]))
+    /* Likewise, if the inversion list is currently empty */
+    len = _invlist_len(invlist);
+    if (len == 0) {
+        _append_range_to_invlist(invlist, start, end);
+        return invlist;
+    }
+
+    /* If the new range ends higher than the current highest ... */
+    cur_highest = invlist_highest(invlist);
+    if (end > cur_highest) {
+        UV temp;
+
+        /* If the whole range is higher, we can just append it */
+        if (start > cur_highest) {
+            _append_range_to_invlist(invlist, start, end);
+            return invlist;
+        }
+
+        /* But if there is a portion of the range that isn't higher, first
+         * append the portion that is higher ... */
+        _append_range_to_invlist(invlist, cur_highest + 1, end);
+
+        /* Then adjust things so that it appears to the code below as if we are
+         * trying to just add the not-already-added portion */
+        temp = end;
+        end = cur_highest;
+        cur_highest = temp;
+    }
+
+    /* Starting here, we have to know the internals of the list */
+    array = invlist_array(invlist);
+
+    /* We have dealt with appending, now see about prepending */
+    if (start < array[0]) {
+
+        /* Here at least part of the range comes below the current list.
+         * Adding something which has 0 in it is somewhat tricky, and uncommon.
+         * Let the union code handle it, rather than having to know the
+         * trickiness in two code places.  */
+        if (UNLIKELY(start == 0)) {
+            SV* range_invlist;
+
+            range_invlist = _new_invlist(2);
+            _append_range_to_invlist(range_invlist, start, end);
+
+            _invlist_union(invlist, range_invlist, &invlist);
+
+            SvREFCNT_dec_NN(range_invlist);
+
+            return invlist;
+        }
+
+        /* If the whole new range comes before the first entry, and doesn't
+         * extend it, we have to insert it as an additional range */
+        if (end < array[0] - 1) {
+            i_s = i_e = -1;
+            goto splice_new_range;
+        }
+
+        /* Here the new range adjoins the existing first range, extending it
+         * downwards. And continue on below to handle the rest */
+        array[0] = start;
+
+        i_s = 0;
+    }
+    else { /* Not prepending any part of the new range to the existing list.
+              Find where in the list it should go: invlist[i_s] <= start <
+              array[i_s+1] */
+        i_s = _invlist_search(invlist, start);
+    }
+
+    /* Find where in the list the new range ends (but we can skip this if it
+     * will be the same as i_s, which we already have computed) */
+    i_e = (start == end)
+          ? i_s
+          : _invlist_search(invlist, end);
+
+    /* Here generally invlist[i_e] <= end < array[i_e+1].  But if invlist[i_e]
+     * is a range that goes to infinity there is no element at invlist[i_e+1],
+     * so only the first relation holds.
+     *
+     * Because there is no higher element, we treat specially cases that
+     * involve unterminated ranges.  This includes both when the new range
+     * terminates within such a range, and when the new one is immediately
+     * adjacent (below) to one. */
+    if (   i_e == len - 1
+        || (   cur_highest == UV_MAX
+             && i_e == len - 2
+             && end == array[len-1] - 1))
     {
-	_append_range_to_invlist(invlist, start, end);
-	return invlist;
+        /* Here, we know that after the addition, everything from 'start' to
+         * infinity will be in the inversion list.  If 'start' is already in
+         * the final existing range, this has been a no-op */
+        if (start >= array[len-1]) {
+            return invlist;
+        }
+
+        /* If 'start' adjoins the range below it, that range will be merged
+         * with this final range */
+        if (   ! ELEMENT_RANGE_MATCHES_INVLIST(i_s)
+            && start == array[i_s])
+        {
+            i_s--;
+            start = array[i_s];
+        }
+
+        /* If 'start' is in a range that is in the inversion list, then from
+         * the beginning of that range to infinity will be in the inversion
+         * list.  Any later ranges in the list are irrelevant. */
+        if (ELEMENT_RANGE_MATCHES_INVLIST(i_s)) {
+            invlist_set_len(invlist, i_s + 1,
+                                        *(get_invlist_offset_addr(invlist)));
+            /* XXX */
+            return invlist;
+        }
+
+        /* Here, 'start' is not in a range in the inversion list.  That means
+         * the range above it now will start at 'start' ... */
+        i_s++;
+        array[i_s] = start;
+
+        /* ... and has no end (hence extends to infinity */
+        /* XXX */
+        invlist_set_len(invlist, i_s + 1, *(get_invlist_offset_addr(invlist)));
     }
 
-    /* Here, can't just append things, create and return a new inversion list
-     * which is the union of this range and the existing inversion list.  (If
-     * the new range is well-behaved wrt to the old one, we could just insert
-     * it, doing a Move() down on the tail of the old one (potentially growing
-     * it first).  But to determine that means we would have the extra
-     * (possibly throw-away) work of first finding where the new one goes and
-     * whether it disrupts (splits) an existing range, so it doesn't appear to
-     * me (khw) that it's worth it) */
-    range_invlist = _new_invlist(2);
-    _append_range_to_invlist(range_invlist, start, end);
+    /* We handled the edge cases specially above, in part so that in the code
+     * below, we don't have to worry about exceeding the array bounds.
+     *
+     * If the new range is adjacent to the range immediately above it, this
+     * operation is equivalent to adding the upper range and this one in the
+     * same overlapping operation.  Doing it this way makes the code below have
+     * fewer special cases */
+    if ( ! ELEMENT_RANGE_MATCHES_INVLIST(i_e)
+        && end + 1 == array[i_e + 1])
+    {
+        i_e++;
+        array[i_e] = start;
+        end = array[i_e + 1] - 1;
+    }
 
-    _invlist_union(invlist, range_invlist, &invlist);
+    /* Similarly, when it extends the range below */
+    if (   ! ELEMENT_RANGE_MATCHES_INVLIST(i_s)
+        && start == array[i_s])
+    {
+        array[i_s] = end + 1;
+        i_s--;
+        start = array[i_s];
+    }
 
-    /* The temporary can be freed */
-    SvREFCNT_dec_NN(range_invlist);
+    /* The new range may absorb existing ones.  The number of these is the
+     * number of existing ranges crossed by this new one.  It takes two
+     * endpoints to define a range, (except to infinity, which we've let the
+     * union code handle, so won't be encountered here).But we round down thiWe
+     * do this by moving the XXX better explanation We don't move a
+     * half-interval */
+    squash = ( (int) ((i_e - i_s) / 2)) * 2;
+
+    if (squash == 0) {  /* If doesn't cross an existing range */
+
+        /* If the whole range is within a single existing one, this add is a
+         * no-op */
+        if (   ELEMENT_RANGE_MATCHES_INVLIST(i_s)
+                /* Why need both since is 0, perhaps because of the (int) ? XXX */
+            || ELEMENT_RANGE_MATCHES_INVLIST(i_e))
+        {
+            return invlist;
+        }
+
+        /* Here, no part of the range is in the list.  Must add it.  It will
+         * occupy 2 more slots */
+      splice_new_range:
+
+        invlist_extend(invlist, len + 2);
+        array = invlist_array(invlist);
+        Move(array + i_e + 1, array + i_e + 3, len - i_e - 1, UV);  /* don't include any trailing NUL */
+
+        /* Do the actual splice */
+        array[i_e+1] = start;
+        array[i_e+2] = end + 1;
+        /* XXX */
+        invlist_set_len(invlist, len + 2, *(get_invlist_offset_addr(invlist)));
+        return invlist;
+    }
+
+    /* Now, both ends of the range are in the list.  This means everything
+     * between must be.  Just squash things together */
+    Move(array + i_e + 1, array + i_s + 1, len - i_e - 1, UV);
+    /* XXX */
+    invlist_set_len(invlist, len - squash, *(get_invlist_offset_addr(invlist)));
 
     return invlist;
 }
